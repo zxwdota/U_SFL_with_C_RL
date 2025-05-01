@@ -66,7 +66,7 @@ def prGreen(skk): print("\033[92m {}\033[00m" .format(skk))
 # No. of users
 num_users = 5
 #用户机数量设置
-epochs = 5
+epochs = 50
 #通信次数设置（也就是总训练轮次，服务器的epochs）
 frac = 1        # participation of clients; if 1 then 100% clients participate in SFLV1
 #用户机参与的比例
@@ -807,6 +807,22 @@ dataset_test = SkinData(test, transform = test_transforms)
 dict_users = dataset_iid(dataset_train, num_users)
 dict_users_test = dataset_iid(dataset_test, num_users)
 
+
+from collections import Counter
+
+# 假设 `dict_users` 是客户端样本划分字典，`dataset_train` 是训练集 Dataset（SkinData）
+client_label_stats = {}
+
+for client_id, indices in dict_users.items():
+    labels = [dataset_train[i][1].item() for i in indices]  # 提取标签
+    label_counts = dict(Counter(labels))  # 统计每类数量
+    client_label_stats[client_id] = label_counts
+
+# 打印每个客户端的标签分布
+for cid, stats in client_label_stats.items():
+    print(f"\nClient {cid} label distribution:")
+    for label, count in sorted(stats.items()):
+        print(f"  Class {label}: {count} samples")
 
 #------------ Training And Testing  -----------------
 net_glob_client.train()
