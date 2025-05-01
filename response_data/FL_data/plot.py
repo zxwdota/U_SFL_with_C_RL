@@ -8,7 +8,11 @@ import rl_utils
 
 # 加载数据
 with open('acc.pkl', 'rb') as f:
-    old_split_return = -np.array(pickle.load(f))
+    old_split_return = np.array(pickle.load(f))
+old_split_return_mv = rl_utils.moving_average(old_split_return,19)
 
-
-a=1
+plt.scatter(range(len(old_split_return)), old_split_return, marker='s')
+plt.plot(range(len(old_split_return)), old_split_return, alpha=0.3)
+plt.plot(range(len(old_split_return)), old_split_return_mv)
+plt.show()
+plt.close()

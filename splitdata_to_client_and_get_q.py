@@ -524,8 +524,8 @@ if __name__ == '__main__':
     Q_dict_users_non_iid = random_get_dict(dict_users_non_iid, config.Q_sample_train_p_non_iid)
 
 
-    q_acc, q_loss = get_quality(dataset_train, dataset_test, Q_dict_users_non_iid, Q_dict_users_test)
-    client_data_num = np.array([len(dict_users_non_iid[idex]) for idex in range(len(dict_users_iid))])
+    # q_acc, q_loss = get_quality(dataset_train, dataset_test, Q_dict_users_non_iid, Q_dict_users_test)
+    # client_data_num = np.array([len(dict_users_non_iid[idex]) for idex in range(len(dict_users_iid))])
 
 
     # # all_categories = dataset_train.df['target'].unique()
@@ -544,18 +544,15 @@ if __name__ == '__main__':
     # # np.save(f'client_num_client{config.num_clients}',client_num)
     # # np.save(f'KLD_client{config.num_clients}.npy', np.array(KLD))
     # # np.save(f'JSD_client{config.num_clients}.npy', np.array(JSD))
-    np.save(f'response_data/FL_data/Q_acc_client{config.num_clients}.npy', np.array(q_acc))
-    np.save(f'response_data/FL_data/Q_loss_client{config.num_clients}.npy', np.array(q_loss))
+    # np.save(f'response_data/FL_data/Q_acc_client{config.num_clients}.npy', np.array(q_acc))
+    # np.save(f'response_data/FL_data/Q_loss_client{config.num_clients}.npy', np.array(q_loss))
 
-    # q_loss = np.load(f'npydata/Q_loss_client{config.num_clients}.npy')
-    # num = np.load(f'npydata/client_num_client50.npy')
+    q_loss = np.load(f'npydata/Q_loss_client{config.num_clients}.npy')
+    client_data_num = np.load(f'npydata/client_num_client50.npy')
 
 
     env = Env(q_loss,client_data_num)
-    with open ('KLdata.pkl', 'rb') as f:
-        _ = pickle.load(f)
-        KL = pickle.load(f)
-        server_idex = pickle.load(f)
+
     choose_client_index = env.agg_ass
     server_num = len(env.server_data['location_x'])
     choose_server_index = range(server_num)
@@ -594,8 +591,8 @@ if __name__ == '__main__':
             for i in choose_client_index[j]:
                 client[i].train_client(server[j])
 
-            global_model_C = federated_client_averaging_no_weight(global_model_C, clients)
-            global_model_S = federated_server_averaging_no_weight(global_model_S, servers)
+        global_model_C = federated_client_averaging_no_weight(global_model_C, clients)
+        global_model_S = federated_server_averaging_no_weight(global_model_S, servers)
 
         for j in choose_server_index:
             for i in choose_client_index[j]:
