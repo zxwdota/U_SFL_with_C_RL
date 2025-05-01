@@ -239,7 +239,7 @@ def read_data_non_iid():
     return dataset_train, dataset_test, dict_users_non_iid, dict_users_iid, dict_users_test
 
 
-def get_quality(dataset_train, dataset_test,Qdict_users,Q_dict_users_test):
+def get_quality(dataset_train, dataset_test, Qdict_users,Q_dict_users_test):
     torch.manual_seed(config.seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
@@ -288,9 +288,9 @@ def get_quality(dataset_train, dataset_test,Qdict_users,Q_dict_users_test):
 def global_model_evaluate(ldr_test, net_glob_client, net_global_server,
                 batch_acc_test, batch_loss_test, criterion=torch.nn.CrossEntropyLoss()):
 
-    torch.manual_seed(config.seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    # torch.manual_seed(config.seed)
+    # torch.backends.cudnn.deterministic = True
+    # torch.backends.cudnn.benchmark = False
 
     device = config.device_fl
     net_glob_client.to(device)
@@ -321,15 +321,18 @@ class Server(object):
         self.optimizer = torch.optim.Adam(self.model_S.parameters(), lr=self.lr)
     def train_server(self, client_output_c, y):
         self.model_S.train()
-        # self.model_S.to(self.device)
         self.optimizer.zero_grad()
         server_fx = self.model_S(client_output_c)
         loss_server = torch.nn.CrossEntropyLoss()(server_fx, y)
-        loss_server.backward()
-        client_output_grad = client_output_c.grad
+
+        # ✅ 用 autograd.grad 显式求梯度
+        client_output_grad = torch.autograd.grad(loss_server, client_output_c, retain_graph=True)[0]
+
+        loss_server.backward(retain_graph=True)
         self.optimizer.step()
-        # print("loss:", loss_server)
+
         return client_output_grad
+
     def update_model(self,global_model_S):
         self.model_S = copy.deepcopy(global_model_S).to(config.device_fl)
 
@@ -352,7 +355,8 @@ class Client(object):
                 images, labels = images.to(self.device), labels.to(self.device)
                 self.optimizer_client.zero_grad()
                 client_output = self.model_C(images)
-                client_output_c = client_output.clone().detach().requires_grad_(True)
+                client_output.retain_grad()
+                client_output_c = client_output
                 client_output_grad = server.train_server(client_output_c, labels)
                 client_output.backward(client_output_grad)
                 self.optimizer_client.step()
@@ -528,35 +532,20 @@ if __name__ == '__main__':
     # client_data_num = np.array([len(dict_users_non_iid[idex]) for idex in range(len(dict_users_iid))])
 
 
-    # # all_categories = dataset_train.df['target'].unique()
-    #
-    # # client_data = [dataset_train.df.iloc[list(dict_users_non_iid[i])] for i in range(n_clients)]
-    # # client_counts = [client_data[i]['target'].value_counts().reindex(all_categories, fill_value=0) for i in range(n_clients)]
-    # # client_data_dist = [client_counts[i] / client_counts[i].sum() for i in range(n_clients)]
-    # # client_num = np.array([len(dict_users_non_iid[i]) for i in range(n_clients)])
-    # # test_dist = dataset_test.df['target'].value_counts() / dataset_test.df['target'].value_counts().sum()
-    #
-    # # KLD = [entropy(client_data_dist[i], test_dist) for i in range(n_clients)]  # KLD 越小表示越相似
-    # # JSD = [jensenshannon(client_data_dist[i], test_dist) for i in range(n_clients)]  # JSD 越小表示越相似
-    #
-
-    #
-    # # np.save(f'client_num_client{config.num_clients}',client_num)
-    # # np.save(f'KLD_client{config.num_clients}.npy', np.array(KLD))
-    # # np.save(f'JSD_client{config.num_clients}.npy', np.array(JSD))
     # np.save(f'response_data/FL_data/Q_acc_client{config.num_clients}.npy', np.array(q_acc))
-    # np.save(f'response_data/FL_data/Q_loss_client{config.num_clients}.npy', np.array(q_loss))
+    # client_num = np.array([len(dict_users_non_iid[i]) for i in range(n_clients)])
 
-    q_loss = np.load(f'npydata/Q_loss_client{config.num_clients}.npy')
-    client_data_num = np.load(f'npydata/client_num_client50.npy')
+    # q_loss = np.load(f'npydata/Q_loss_client{config.num_clients}.npy')
+    # client_data_num = np.load(f'npydata/client_num_client50.npy')
 
 
-    env = Env(q_loss,client_data_num)
+    # env = Env(q_loss,client_data_num)
+    # choose_client_index = env.agg_ass
+    # server_num = len(env.server_data['location_x'])
+    # choose_server_index = range(server_num)
 
-    choose_client_index = env.agg_ass
-    server_num = len(env.server_data['location_x'])
-    choose_server_index = range(server_num)
-
+    choose_client_index = [[0,1,2,3,4]]
+    choose_server_index = [0]
 
     global_model_C = ResNet18_client_side()
     global_model_S = ResNet18_server_side(Baseblock, [2, 2, 2], 7)
@@ -622,35 +611,4 @@ if __name__ == '__main__':
             pickle.dump(global_model_C, f)
         with open('response_data/FL_data/model_S.pkl', 'wb') as f:
             pickle.dump(global_model_S, f)
-    # for i in range(config.num_clients):
-    #     print('train client:', i)
-    #     client[i].train_client(server[i])
-
-
-
-
-
-
-    # def get_quality(dataset_Q_train_data):
-    # sampled_dict = {}
-    # batch_acc_test = []
-    # batch_loss_test = []
-    # sampled_num = int(int(len(dataset_test) / config.num_clients) * 0.2)
-
-    # run()
-    # for key, dict_set in dict_users_Q_test.items():
-    #     # 随机采样
-    #     sampled_ints = set(random.sample(self.dict_users_Q_test[key], sampled_num))
-    #     # 将采样结果添加到新字典中
-    #     sampled_dict[key] = sampled_ints
-    # print("begin get data quality")
-    # for idx in range(self.num_clients):
-    #     quality = DataLoader(DatasetSplit(self.dataset_test, sampled_dict[idx]), batch_size=sampled_num, shuffle=True)
-    #     batch_acc_test, batch_loss_test = global_model_evaluate(quality, self.net_glob_client, self.net_glob_server,
-    #                                            self.device, batch_acc_test, batch_loss_test,
-    #                                            criterion=torch.nn.CrossEntropyLoss())
-    # for idx in range(self.num_clients):
-    #     batch_acc_test.append(1.0)
-    # print("end got data quality")
-    # return np.array(batch_acc_test).reshape(1, -1)
 
