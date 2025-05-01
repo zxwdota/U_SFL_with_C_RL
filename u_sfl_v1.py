@@ -275,7 +275,7 @@ def get_quality(dataset_train, dataset_test, Qdict_users,Q_dict_users_test):
                 acc_server = calculate_accuracy(server_fx, y)
                 loss_server.backward()
                 client_grad = client_output_c.grad
-                print("client", i, "epoch", epoch, "batch_idx:", batch_idx, "loss:", loss_server)
+                # print("client", i, "epoch", epoch, "batch_idx:", batch_idx, "loss:", loss_server)
                 client_output.backward(client_grad)
                 optimizer_server.step()
                 optimizer_client.step()
@@ -319,7 +319,9 @@ class Server(object):
         self.lr = config.lr
         self.model_S.to(self.device)
         self.optimizer = torch.optim.Adam(self.model_S.parameters(), lr=self.lr)
+        self.fed_check = False
     def train_server(self, client_output_c, y):
+        self.fed_check = False
         self.model_S.train()
         self.optimizer.zero_grad()
         server_fx = self.model_S(client_output_c)
@@ -525,24 +527,20 @@ if __name__ == '__main__':
     Q_dict_users_non_iid = random_get_dict(dict_users_non_iid, config.Q_sample_train_p_non_iid)
 
 
-    # q_acc, q_loss = get_quality(dataset_train, dataset_test, Q_dict_users_non_iid, Q_dict_users_test)
-    # client_data_num = np.array([len(dict_users_non_iid[idex]) for idex in range(len(dict_users_iid))])
+    q_acc, q_loss = get_quality(dataset_train, dataset_test, Q_dict_users_non_iid, Q_dict_users_test)
+    client_data_num = np.array([len(dict_users_non_iid[idex]) for idex in range(len(dict_users_iid))])
 
-
-    # np.save(f'response_data/FL_data/Q_acc_client{config.num_clients}.npy', np.array(q_acc))
-    # client_num = np.array([len(dict_users_non_iid[i]) for i in range(n_clients)])
+    np.save(f'response_data/FL_data/50client_non_iid/Q_acc_client{config.num_clients}.npy', np.array(q_acc))
 
     # q_loss = np.load(f'npydata/Q_loss_client{config.num_clients}.npy')
-    # client_data_num = np.load(f'npydata/client_num_client50.npy')
 
+    env = Env(q_loss,client_data_num)
+    choose_client_index = env.agg_ass
+    server_num = len(env.server_data['location_x'])
+    choose_server_index = range(server_num)
 
-    # env = Env(q_loss,client_data_num)
-    # choose_client_index = env.agg_ass
-    # server_num = len(env.server_data['location_x'])
-    # choose_server_index = range(server_num)
-
-    choose_client_index = [[0,1,2,3,4]]
-    choose_server_index = [0]
+    # choose_client_index = [[0,1,2,3,4]]
+    # choose_server_index = [0]
 
     global_model_C = ResNet18_client_side()
     global_model_S = ResNet18_server_side(Baseblock, [2, 2, 2], 7)
@@ -602,10 +600,10 @@ if __name__ == '__main__':
         del Dt
         torch.cuda.empty_cache()
 
-        with open('response_data/FL_data/acc.pkl', 'wb') as f:
+        with open('response_data/FL_data/50client_non_iid/iid_acc.pkl', 'wb') as f:
             pickle.dump(acc, f)
-        with open('response_data/FL_data/model_C.pkl', 'wb') as f:
+        with open('response_data/FL_data/50client_non_iid/.pkl', 'wb') as f:
             pickle.dump(global_model_C, f)
-        with open('response_data/FL_data/model_S.pkl', 'wb') as f:
+        with open('response_data/FL_data/50client_non_iid/.pkl', 'wb') as f:
             pickle.dump(global_model_S, f)
 
