@@ -326,6 +326,7 @@ class Server(object):
         self.optimizer.zero_grad()
         server_fx = self.model_S(client_output_c)
         loss_server = torch.nn.CrossEntropyLoss()(server_fx, y)
+        print(loss_server)
 
         # ✅ 用 autograd.grad 显式求梯度
         client_output_grad = torch.autograd.grad(loss_server, client_output_c, retain_graph=True)[0]
@@ -361,7 +362,11 @@ class Client(object):
                 client_output_c = client_output
                 client_output_grad = server.train_server(client_output_c, labels)
                 client_output.backward(client_output_grad)
+                # with torch.no_grad():
+                #     print("Before:", self.model_C.layer1[0].weight.view(-1)[0].item())
                 self.optimizer_client.step()
+                # with torch.no_grad():
+                #     print("After:", self.model_C.layer1[0].weight.view(-1)[0].item())
     def update_model(self,globel_model_C):
         self.model_C = copy.deepcopy(globel_model_C).to(config.device_fl)
 
@@ -467,7 +472,7 @@ def federated_client_averaging_no_weight(global_model, clients):
 
     return global_model
 
-def federated_server_averaging_no_weight(global_model, clients):
+def federated_server_averaging_no_weight(global_model, servers):
     """
     进行FedAvg聚合，更新全局模型（不加权重，直接平均）。
     :param global_model: 全局模型
@@ -478,16 +483,16 @@ def federated_server_averaging_no_weight(global_model, clients):
     global_dict = global_model.state_dict()
 
     # 获取所有客户端模型的参数
-    client_state_dicts = []
-    for client in clients:
-        client_state_dicts.append(client.model_S.state_dict())
+    server_state_dicts = []
+    for server in servers:
+        server_state_dicts.append(server.model_S.state_dict())
 
     # 进行直接平均聚合
     for key in global_dict.keys():
         # 计算每个参数的平均
         total_sum = torch.zeros_like(global_dict[key]).to(config.device_fl)
-        for client_dict in client_state_dicts:
-            total_sum += client_dict[key]
+        for server_dict in server_state_dicts:
+            total_sum += server_dict[key]
 
         # 更新全局模型的参数
         global_dict[key] = total_sum / len(clients)
@@ -507,103 +512,104 @@ from scipy.stats import entropy
 
 
 
-if __name__ == '__main__':
-    SEED = config.seed
-    random.seed(SEED)
-    np.random.seed(SEED)
-    if torch.cuda.is_available():
-        print(torch.cuda.get_device_name(0))
+
+SEED = config.seed
+random.seed(SEED)
+np.random.seed(SEED)
+if torch.cuda.is_available():
+    print(torch.cuda.get_device_name(0))
 
 
 
-    dataset_train, dataset_test, dict_users_non_iid, dict_users_iid, dict_users_test = read_data_non_iid()
+dataset_train, dataset_test, dict_users_non_iid, dict_users_iid, dict_users_test = read_data_non_iid()
 
-    # iid 的 dict
-    Q_dict_users_iid = random_get_dict(dict_users_iid, config.Q_sample_train_p_iid)
+# iid 的 dict
+Q_dict_users_iid = random_get_dict(dict_users_iid, config.Q_sample_train_p_iid)
 
-    # non_iid 的 idex
-    Q_dict_users_test = random_get_dict(dict_users_test, config.Q_sample_train_p_iid)
+# non_iid 的 idex
+Q_dict_users_test = random_get_dict(dict_users_test, config.Q_sample_train_p_iid)
 
-    Q_dict_users_non_iid = random_get_dict(dict_users_non_iid, config.Q_sample_train_p_non_iid)
+Q_dict_users_non_iid = random_get_dict(dict_users_non_iid, config.Q_sample_train_p_non_iid)
 
 
-    q_acc, q_loss = get_quality(dataset_train, dataset_test, Q_dict_users_non_iid, Q_dict_users_test)
-    client_data_num = np.array([len(dict_users_non_iid[idex]) for idex in range(len(dict_users_iid))])
+# q_acc, q_loss = get_quality(dataset_train, dataset_test, Q_dict_users_non_iid, Q_dict_users_test)
+client_data_num = np.array([len(dict_users_non_iid[idex]) for idex in range(len(dict_users_iid))])
 
-    np.save(f'response_data/FL_data/50client_non_iid/Q_acc_client{config.num_clients}.npy', np.array(q_acc))
+# np.save(f'response_data/FL_data/50client_non_iid/Q_acc_client{config.num_clients}.npy', np.array(q_acc))
+# np.save(f'response_data/FL_data/50client_non_iid/Q_loss_client{config.num_clients}.npy', np.array(q_loss))
 
-    # q_loss = np.load(f'npydata/Q_loss_client{config.num_clients}.npy')
+q_loss = np.load(f'response_data/FL_data/50client_non_iid/Q_loss_client{config.num_clients}.npy')
 
-    env = Env(q_loss,client_data_num)
-    choose_client_index = env.agg_ass
-    server_num = len(env.server_data['location_x'])
-    choose_server_index = range(server_num)
+env = Env(q_loss,client_data_num)
+choose_client_index = env.agg_ass
+server_num = len(env.server_data['location_x'])
+choose_server_index = range(server_num)
 
-    # choose_client_index = [[0,1,2,3,4]]
-    # choose_server_index = [0]
+# choose_client_index = [[0,1,2,3,4]]
+# choose_server_index = [0]
 
-    global_model_C = ResNet18_client_side()
-    global_model_S = ResNet18_server_side(Baseblock, [2, 2, 2], 7)
-    global_model_C.apply(initialize_weights)
-    global_model_S.apply(initialize_weights)
+global_model_C = ResNet18_client_side()
+global_model_S = ResNet18_server_side(Baseblock, [2, 2, 2], 7)
+global_model_C.apply(initialize_weights)
+global_model_S.apply(initialize_weights)
 
-    client = {}
-    server = {}
-    # 初始化所有客户端模型
+client = {}
+server = {}
+# 初始化所有客户端模型
+for j in choose_server_index:
+    for i in choose_client_index[j]:
+        # client[i] = Client(i, dataset_train, dict_users_iid, global_model_C)
+        client[i] = Client(i, dataset_train, dict_users_non_iid, global_model_C)
+    server[j] = Server(j, global_model_S)
+
+
+acc=[]
+loss=[]
+clients = []
+client_weights = []
+servers = []
+# cho_client_idx = np.array(range(50))
+for j in choose_server_index:
+    clients.append([client[i] for i in choose_client_index[j]])  # 所有客户端的模型
+    client_weights.append([len(client[i].ldr_train.dataset) for i in choose_client_index[j]])  # 基于数据量的权重
+    servers.append(server[j])  # 所有客户端的模型
+
+# 训练500轮联邦
+for r in tqdm(range(500), desc='Federated Rounds'):
+    tqdm.write(f'range:{r}')
     for j in choose_server_index:
         for i in choose_client_index[j]:
-            # client[i] = Client(i, dataset_train, dict_users_iid, global_model_C)
-            client[i] = Client(i, dataset_train, dict_users_non_iid, global_model_C)
-        server[j] = Server(j, global_model_S)
+            client[i].train_client(server[j])
 
+    global_model_C = federated_client_averaging_no_weight(global_model_C, clients)
+    global_model_S = federated_server_averaging_no_weight(global_model_S, servers)
 
-    acc=[]
-    loss=[]
-    clients = []
-    client_weights = []
-    servers = []
-    # cho_client_idx = np.array(range(50))
     for j in choose_server_index:
-        clients.append([client[i] for i in choose_client_index[j]])  # 所有客户端的模型
-        client_weights.append([len(client[i].ldr_train.dataset) for i in choose_client_index[j]])  # 基于数据量的权重
-        servers.append(server[j])  # 所有客户端的模型
+        for i in choose_client_index[j]:
+            client[i].update_model(global_model_C)
+        server[j].update_model(global_model_S)
 
-    # 训练500轮联邦
-    for r in tqdm(range(500), desc='Federated Rounds'):
-        tqdm.write(f'range:{r}')
-        for j in choose_server_index:
-            for i in choose_client_index[j]:
-                client[i].train_client(server[j])
+    turn_acc = []
+    turn_loss = []
 
-        global_model_C = federated_client_averaging_no_weight(global_model_C, clients)
-        global_model_S = federated_server_averaging_no_weight(global_model_S, servers)
+    Dt = DataLoader(DatasetSplit(dataset_test, dict_users_test[0]), batch_size=206, shuffle=False)
+    global_model_evaluate(Dt, global_model_C, global_model_S, turn_acc, turn_loss)
 
-        for j in choose_server_index:
-            for i in choose_client_index[j]:
-                client[i].update_model(global_model_C)
-            server[j].update_model(global_model_S)
+    round_acc = sum(turn_acc) / len(turn_acc)
+    tqdm.write(f"acc: {turn_acc}, {turn_loss}")
+    tqdm.write(f"avgacc: {round_acc}")
+    acc.append(round_acc)
 
-        turn_acc = []
-        turn_loss = []
+    # 可选：更新进度条后缀显示当前平均准确率
+    tqdm.write(f'Round {r + 1} avg accuracy: {round_acc:.4f}')
 
-        Dt = DataLoader(DatasetSplit(dataset_test, dict_users_test[0]), batch_size=206, shuffle=False)
-        global_model_evaluate(Dt, global_model_C, global_model_S, turn_acc, turn_loss)
+    del Dt
+    torch.cuda.empty_cache()
 
-        round_acc = sum(turn_acc) / len(turn_acc)
-        tqdm.write(f"acc: {turn_acc}, {turn_loss}")
-        tqdm.write(f"avgacc: {round_acc}")
-        acc.append(round_acc)
-
-        # 可选：更新进度条后缀显示当前平均准确率
-        tqdm.write(f'Round {r + 1} avg accuracy: {round_acc:.4f}')
-
-        del Dt
-        torch.cuda.empty_cache()
-
-        with open('response_data/FL_data/50client_non_iid/iid_acc.pkl', 'wb') as f:
-            pickle.dump(acc, f)
-        with open('response_data/FL_data/50client_non_iid/.pkl', 'wb') as f:
-            pickle.dump(global_model_C, f)
-        with open('response_data/FL_data/50client_non_iid/.pkl', 'wb') as f:
-            pickle.dump(global_model_S, f)
+    with open('response_data/FL_data/50client_non_iid/iid_acc.pkl', 'wb') as f:
+        pickle.dump(acc, f)
+    with open('response_data/FL_data/50client_non_iid/iid_model_C.pkl', 'wb') as f:
+        pickle.dump(global_model_C, f)
+    with open('response_data/FL_data/50client_non_iid/iid_model_S.pkl', 'wb') as f:
+        pickle.dump(global_model_S, f)
 
