@@ -21,9 +21,8 @@ np.random.seed(SEED)
 device_fl= torch.device("mps")  # cpu cuda mps
 if torch.cuda.is_available():
     print(torch.cuda.get_device_name(0))
-_SAVE_DIR = 'rebuild/'
-
-
+_SAVE_DIR = 'rebuild/local_5turn_fedavg/'
+_User_DIR = 'rebuild/'
 # 每次从轮初始的服务器模型开始训练
 def initialize_weights(model):
     for m in model.modules():
@@ -67,30 +66,32 @@ class Client:
         self.cid = cid
         self.idxs = idxs
 
-    def train_one_round(self, server):
-        global dataset_train, global_client_model
+    def train_one_round(self, server,ep):
+        global dataset_train, global_client_model, temp_model, global_server_model
 
         c_model = copy.deepcopy(global_client_model).to(device_fl)
         data = DataLoader(DatasetSplit(dataset_train, self.idxs),
                                batch_size=64, shuffle=True)
-        for images, labels in data:
-            images, labels = images.to(device_fl), labels.to(device_fl)
+        temp_model = global_server_model
+        for t in range(ep):
+            for images, labels in data:
+                images, labels = images.to(device_fl), labels.to(device_fl)
 
-            c_model.train()
-            opt_c = torch.optim.Adam(c_model.parameters(), lr=config.lr)
+                c_model.train()
+                opt_c = torch.optim.Adam(c_model.parameters(), lr=config.lr)
 
-            opt_c.zero_grad()
+                opt_c.zero_grad()
 
-            # 1) 前向取激活
-            f_c = c_model(images)
+                # 1) 前向取激活
+                f_c = c_model(images)
 
-            # 2) 送服务器，拿回 dL/df_c
-            grad_f_c, s_model = server.train_oneround(f_c.detach(), labels, class_weights)
+                # 2) 送服务器，拿回 dL/df_c
+                grad_f_c, s_model = server.train_oneround(f_c.detach(), labels, class_weights)
 
-            # 3) 在本地把这段梯度“注入”进 f_c，更新 client 模型
-            torch.autograd.backward(f_c, grad_tensors=grad_f_c)
+                # 3) 在本地把这段梯度“注入”进 f_c，更新 client 模型
+                torch.autograd.backward(f_c, grad_tensors=grad_f_c)
 
-            opt_c.step()
+                opt_c.step()
 
         return c_model.state_dict(), s_model.state_dict()
 
@@ -110,8 +111,8 @@ class Server:
         返回：
             grad_f_c: tensor, shape same as f_c，用于客户端反向
         """
-        global global_server_model
-        s_model = copy.deepcopy(global_server_model).to(device_fl)
+        global global_server_model, net_model_server, temp_model
+        s_model = copy.deepcopy(temp_model).to(device_fl)
         s_model.train()
         opt_s = torch.optim.Adam(s_model.parameters(), lr=config.lr)
         opt_s.zero_grad()
@@ -192,7 +193,7 @@ def compute_class_weights(dataset, num_classes):
 if __name__ == '__main__':
 
 
-    with open(_SAVE_DIR + 'data_dict.pkl', 'rb') as f:
+    with open(_User_DIR + 'data_dict.pkl', 'rb') as f:
         dataset_train = pickle.load(f)
         dataset_test = pickle.load(f)
         dict_users_non_iid = pickle.load(f)
@@ -230,7 +231,6 @@ if __name__ == '__main__':
     for m in (global_client_model, global_server_model): m.apply(initialize_weights)
 
 
-
     for arr in choose_client_index:
         client_index.extend(arr.tolist())
 
@@ -259,9 +259,9 @@ if __name__ == '__main__':
     for r in tqdm(range(num_rounds),desc='Rounds',unit='round'):
         server_states_for_inter.clear()
         client_states_for_inter.clear()
-
-        for srv,cli in zip(server_list,client_list):
-            c_model_dict,s_model_dict = cli.train_one_round(srv)
+        local_ep = [5 for _ in client_index]
+        for srv,cli,ep in zip(server_list,client_list,local_ep):
+            c_model_dict,s_model_dict = cli.train_one_round(srv,ep)
             server_states_for_inter.append(s_model_dict)
             client_states_for_inter.append(c_model_dict)
 
@@ -284,13 +284,14 @@ if __name__ == '__main__':
         print(f'[Round {r:02d}]  acc={test_acc:.2f}%  loss={test_loss:.4f}')
         # tqdm.write(f'[Round {r:02d}]  acc={test_acc:.2f}%  loss={test_loss:.4f}')
 
-
+        acc.append(test_acc)
+        loss.append(test_loss)
 
         torch.mps.empty_cache()
         # 也可以把结果挂在外层进度条后缀：
 
-        json.dump(test_acc, open(_SAVE_DIR + 'test_acc.json', 'w'))
-        json.dump(test_loss, open(_SAVE_DIR + 'test_loss.json', 'w'))
+        json.dump(acc, open(_SAVE_DIR + 'test_acc.json', 'w'))
+        json.dump(loss, open(_SAVE_DIR + 'test_loss.json', 'w'))
         pickle.dump(global_client_model, open(_SAVE_DIR + 'client_model.pkl', 'wb'))
         pickle.dump(global_server_model, open(_SAVE_DIR + 'server_model.pkl', 'wb'))
 
