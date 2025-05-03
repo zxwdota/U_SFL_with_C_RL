@@ -31,6 +31,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import copy
+import json
 
 
 SEED = 1234
@@ -54,7 +55,8 @@ if torch.cuda.is_available():
 program = "SFLV1 ResNet18 on HAM10000"
 print(f"---------{program}----------")              # this is to identify the program in the slurm outputs files
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device('mps')
+
 #如果有GPU则使用CUDA进行训练
 
 # To print in color -------test/train of the client side
@@ -64,7 +66,7 @@ def prGreen(skk): print("\033[92m {}\033[00m" .format(skk))
 
 #===================================================================
 # No. of users
-num_users = 5
+num_users = 50
 #用户机数量设置
 epochs = 50
 #通信次数设置（也就是总训练轮次，服务器的epochs）
@@ -807,13 +809,26 @@ dataset_test = SkinData(test, transform = test_transforms)
 dict_users = dataset_iid(dataset_train, num_users)
 dict_users_test = dataset_iid(dataset_test, num_users)
 
+import pickle
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+if torch.cuda.is_available():
+    print(torch.cuda.get_device_name(0))
+_SAVE_DIR = 'rebuild/'
+with open(_SAVE_DIR + 'data_dict.pkl', 'rb') as f:
+    dataset_train = pickle.load(f)
+    dataset_test = pickle.load(f)
+    dict_users_non_iid = pickle.load(f)
+    dict_users_iid = pickle.load(f)
+    dict_users_test = pickle.load(f)
 
 from collections import Counter
 
 # 假设 `dict_users` 是客户端样本划分字典，`dataset_train` 是训练集 Dataset（SkinData）
 client_label_stats = {}
 
-for client_id, indices in dict_users.items():
+for client_id, indices in dict_users_non_iid.items():
     labels = [dataset_train[i][1].item() for i in indices]  # 提取标签
     label_counts = dict(Counter(labels))  # 统计每类数量
     client_label_stats[client_id] = label_counts
@@ -837,10 +852,13 @@ for iter in range(epochs):
     idxs_users = np.random.choice(range(num_users), m, replace = False)
     # 每一轮训练，随机选择一部分用户（idxs_users）
     w_locals_client = []
+    with open('rebuild/client_index.json', 'r') as f:
+        a = json.load(f)
+    idxs_users = np.array(a)
 
     for idx in idxs_users:
         # 建立客户端模型，由服务器所决定即net_glob_client
-        local = Client(net_glob_client, idx, lr, device, dataset_train = dataset_train, dataset_test = dataset_test, idxs = dict_users[idx], idxs_test = dict_users_test[idx])
+        local = Client(net_glob_client, idx, lr, device, dataset_train = dataset_train, dataset_test = dataset_test, idxs = dict_users_non_iid[idx], idxs_test = dict_users_test[0])
         #为每个用户创建一个Client对象，用于联邦学习的本地模型。
         # Training ------------------
         w_client = local.train(net = copy.deepcopy(net_glob_client).to(device))
@@ -849,8 +867,9 @@ for iter in range(epochs):
         #并将本地模型的权重w_client添加到w_locals_client列表中
 
         # Testing -------------------
-        local.evaluate(net = copy.deepcopy(net_glob_client).to(device), ell= iter)
+        # local.evaluate(net = copy.deepcopy(net_glob_client).to(device), ell= iter)
         #调用local.evaluate函数来评估本地模型在测试集上的性能，并打印出结果。
+
 
 
     # Ater serving all clients for its local epochs------------
@@ -863,6 +882,9 @@ for iter in range(epochs):
 
     # Update client-side global model
     net_glob_client.load_state_dict(w_glob_client)
+    idex=1
+    global_client = Client(net_glob_client, idex, lr, device, dataset_train = dataset_train, dataset_test = dataset_test, idxs = dict_users_non_iid[idex], idxs_test = dict_users_test[0])
+    global_client.evaluate(net = copy.deepcopy(net_glob_client).to(device), ell=iter)
     #使用net_glob_client.load_state_dict函数来更新全局模型的权重为w_glob_client
 
 #===================================================================================

@@ -517,152 +517,139 @@ def compute_class_weights(dataset, num_classes):
     return torch.tensor(weights, dtype=torch.float32, device=config.device_fl)
 
 
+if __name__ == '__main__':
+    SEED = config.seed
+    random.seed(SEED)
+    np.random.seed(SEED)
 
-SEED = config.seed
-random.seed(SEED)
-np.random.seed(SEED)
-if torch.cuda.is_available():
-    print(torch.cuda.get_device_name(0))
+    dirichlet_alpha = 0.5
 
+    dataset_train, dataset_test, dict_users_non_iid, dict_users_iid, dict_users_test = read_data_non_iid(dirichlet_alpha)
 
-dirichlet_alpha = 0.5
-
-
-dataset_train, dataset_test, dict_users_non_iid, dict_users_iid, dict_users_test = read_data_non_iid(dirichlet_alpha)
-
-# ──────────────────── 仅调用一次 ────────────────────
-NUM_CLASSES = 7
-class_weights = compute_class_weights(dataset_train, NUM_CLASSES)
-print("类别权重 =", class_weights)
+    # ──────────────────── 仅调用一次 ────────────────────
+    NUM_CLASSES = 7
+    class_weights = compute_class_weights(dataset_train, NUM_CLASSES)
+    print("类别权重 =", class_weights)
 
 
-# iid 的 dict
-Q_dict_users_iid = random_get_dict(dict_users_iid, config.Q_sample_train_p_iid)
+    client_data_num = np.array([len(dict_users_non_iid[idex]) for idex in range(len(dict_users_iid))])
 
-# non_iid 的 idex
-Q_dict_users_test = random_get_dict(dict_users_test, config.Q_sample_train_p_iid)
+    eval_data = DataLoader(dataset_test, batch_size=206, shuffle=False)
 
-Q_dict_users_non_iid = random_get_dict(dict_users_non_iid, config.Q_sample_train_p_non_iid)
+    q_loss = np.load(f'response_data/FL_data/50client_non_iid_v2/Q_loss_client{config.num_clients}.npy')
 
+    env = Env(q_loss,client_data_num)
+    choose_client_index = env.agg_ass
+    server_num = len(env.server_data['location_x'])
+    choose_server_index = range(server_num)
+    # 1. 全局模型 & 控制变量初始化
+    global_client_model = ResNet18_client_side()
+    global_server_model = ResNet18_server_side(Baseblock, [2, 2, 2], NUM_CLASSES)
+    for m in (global_client_model, global_server_model):
+        m.apply(initialize_weights)
 
-client_data_num = np.array([len(dict_users_non_iid[idex]) for idex in range(len(dict_users_iid))])
-
-Dataset_test_loder = DataLoader(dataset_test, batch_size=206, shuffle=False)
-
-q_loss = np.load(f'response_data/FL_data/50client_non_iid_v2/Q_loss_client{config.num_clients}.npy')
-
-env = Env(q_loss,client_data_num)
-choose_client_index = env.agg_ass
-server_num = len(env.server_data['location_x'])
-choose_server_index = range(server_num)
-# 1. 全局模型 & 控制变量初始化
-global_client_model = ResNet18_client_side()
-global_server_model = ResNet18_server_side(Baseblock, [2, 2, 2], NUM_CLASSES)
-for m in (global_client_model, global_server_model):
-    m.apply(initialize_weights)
-
-# 1.1 SCAFFOLD control variates for clients & server
-c_global = {
-  k: v.to(config.device_fl)
-  for k, v in global_client_model.state_dict().items()
-}
-c_clients = {
-    i: {
-        k: torch.zeros_like(v)
-        for k, v in global_client_model.state_dict().items()
+    # 1.1 SCAFFOLD control variates for clients & server
+    c_global = {
+      k: v.to(config.device_fl)
+      for k, v in global_client_model.state_dict().items()
     }
-    for i in range(config.num_clients)
-}
+    c_clients = {
+        i: {
+            k: torch.zeros_like(v)
+            for k, v in global_client_model.state_dict().items()
+        }
+        for i in range(config.num_clients)
+    }
 
-# —— 新增：全局 server control variate —— #
-c_global_server = { k: torch.zeros_like(v).to(config.device_fl)
-                    for k,v in global_server_model.state_dict().items() }
-# 并为每台 Server 实例初始化各自的 c_server_j
-c_servers = {
-    sid: { k: torch.zeros_like(v).to(config.device_fl)
-           for k,v in global_server_model.state_dict().items() }
-    for sid in choose_server_index
-}
+    # —— 新增：全局 server control variate —— #
+    c_global_server = { k: torch.zeros_like(v).to(config.device_fl)
+                        for k,v in global_server_model.state_dict().items() }
+    # 并为每台 Server 实例初始化各自的 c_server_j
+    c_servers = {
+        sid: { k: torch.zeros_like(v).to(config.device_fl)
+               for k,v in global_server_model.state_dict().items() }
+        for sid in choose_server_index
+    }
 
-# 2. 构造 Client + Server 实例
-client, server = {}, {}
-for j in choose_server_index:
-    # 每个 server 底下的 client 列表
-    clist = []
-    for i in choose_client_index[j]:
-        # 注意多传 c_clients
-        cl = Client(i,
-                    dataset_train,
-                    dict_users_non_iid[i],
-                    global_client_model,
-                    c_clients)
-        client[i] = cl
-        clist.append(cl)
-    server[j] = Server(j,
-                       global_server_model,
-                       clist,
-                       c_servers[j])
-server_list = list(server.values())
+    # 2. 构造 Client + Server 实例
+    client, server = {}, {}
+    for j in choose_server_index:
+        # 每个 server 底下的 client 列表
+        clist = []
+        for i in choose_client_index[j]:
+            # 注意多传 c_clients
+            cl = Client(i,
+                        dataset_train,
+                        dict_users_non_iid[i],
+                        global_client_model,
+                        c_clients)
+            client[i] = cl
+            clist.append(cl)
+        server[j] = Server(j,
+                           global_server_model,
+                           clist,
+                           c_servers[j])
+    server_list = list(server.values())
 
-# 3. 外层循环：Rounds
-for r in range(num_rounds):
-    # 3.1 保存并下发本轮全局 client state + c_global
-    global_client_state = global_client_model.state_dict()
-    # （c_global, c_global_server 已在上面初始化并被逐轮更新）
+    # 3. 外层循环：Rounds
+    for r in range(num_rounds):
+        # 3.1 保存并下发本轮全局 client state + c_global
+        global_client_state = global_client_model.state_dict()
+        # （c_global, c_global_server 已在上面初始化并被逐轮更新）
 
-    # 3.2 intra-server + 客户端 SCAFFOLD + 服务器端 SCAFFOLD 更新
-    server_states_for_inter = []
-    client_states_for_inter = []
-    server_sample_nums    = []
-    server_delta_cs       = []  # 新增，用于收集每台 Server 的 Δc_S
+        # 3.2 intra-server + 客户端 SCAFFOLD + 服务器端 SCAFFOLD 更新
+        server_states_for_inter = []
+        client_states_for_inter = []
+        server_sample_nums    = []
+        server_delta_cs       = []  # 新增，用于收集每台 Server 的 Δc_S
 
-    for srv in server_list:
-        # train_one_round 现在返回四个值：new_client_state, new_server_state, data_num, delta_c_S_j
-        new_c_state, new_s_state, data_num, delta_c_S_j = srv.train_one_round(
-            global_client_state,   # 下发给客户端层的全局模型
-            c_global,              # 客户端层的全局 control variate
-            c_global_server,       # 服务器层的全局 control variate
-            local_steps=K          # 本地步数
+        for srv in server_list:
+            # train_one_round 现在返回四个值：new_client_state, new_server_state, data_num, delta_c_S_j
+            new_c_state, new_s_state, data_num, delta_c_S_j = srv.train_one_round(
+                global_client_state,   # 下发给客户端层的全局模型
+                c_global,              # 客户端层的全局 control variate
+                c_global_server,       # 服务器层的全局 control variate
+                local_steps=K          # 本地步数
+            )
+
+            client_states_for_inter.append(new_c_state)
+            server_states_for_inter.append(new_s_state)
+            server_sample_nums.append(data_num / len(srv.clients))
+            server_delta_cs.append(delta_c_S_j)
+
+        # 3.3 第②层跨服务器聚合（模型参数 & server-level SCAFFOLD）
+        # —— 普通 FedAvg 跨服务器模型聚合 —— #
+        inter_client_state = average_weights(
+            client_states_for_inter,
+            server_sample_nums
+        )
+        inter_server_state = average_weights(
+            server_states_for_inter,
+            server_sample_nums
         )
 
-        client_states_for_inter.append(new_c_state)
-        server_states_for_inter.append(new_s_state)
-        server_sample_nums.append(data_num / len(srv.clients))
-        server_delta_cs.append(delta_c_S_j)
+        # —— SCAFFOLD 聚合 Δc_S 更新全局 server control variate —— #
+        mean_delta_c_S = average_weighted_dict(
+            server_delta_cs,
+            server_sample_nums
+        )
+        for k in c_global_server:
+            if c_global_server[k].dtype.is_floating_point:
+                c_global_server[k] += mean_delta_c_S[k].to(c_global_server[k].device)
 
-    # 3.3 第②层跨服务器聚合（模型参数 & server-level SCAFFOLD）
-    # —— 普通 FedAvg 跨服务器模型聚合 —— #
-    inter_client_state = average_weights(
-        client_states_for_inter,
-        server_sample_nums
-    )
-    inter_server_state = average_weights(
-        server_states_for_inter,
-        server_sample_nums
-    )
+        # 3.4 更新全局模型 & 同步
+        global_client_model.load_state_dict(inter_client_state)
+        global_server_model.load_state_dict(inter_server_state)
 
-    # —— SCAFFOLD 聚合 Δc_S 更新全局 server control variate —— #
-    mean_delta_c_S = average_weighted_dict(
-        server_delta_cs,
-        server_sample_nums
-    )
-    for k in c_global_server:
-        if c_global_server[k].dtype.is_floating_point:
-            c_global_server[k] += mean_delta_c_S[k].to(c_global_server[k].device)
+        for srv in server_list:
+            srv.global_S.load_state_dict(inter_server_state)
+            for cl in srv.clients:
+                cl.sync_with_global(inter_client_state)
 
-    # 3.4 更新全局模型 & 同步
-    global_client_model.load_state_dict(inter_client_state)
-    global_server_model.load_state_dict(inter_server_state)
-
-    for srv in server_list:
-        srv.global_S.load_state_dict(inter_server_state)
-        for cl in srv.clients:
-            cl.sync_with_global(inter_client_state)
-
-    # 3.5 评估、日志……
-    test_acc, test_loss = evaluate(
-        global_client_model,
-        global_server_model,
-        Dataset_test_loder
-    )
-    print(f"[Round {r:02d}] acc={test_acc:.2f}% loss={test_loss:.4f}")
+        # 3.5 评估、日志……
+        test_acc, test_loss = evaluate(
+            global_client_model,
+            global_server_model,
+            eval_data
+        )
+        print(f"[Round {r:02d}] acc={test_acc:.2f}% loss={test_loss:.4f}")
