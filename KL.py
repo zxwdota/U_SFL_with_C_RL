@@ -1,10 +1,7 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from sklearn.datasets import make_blobs
 from sklearn.cluster import KMeans
-from splitdata_to_client_and_get_q import read_data_non_iid, get_quality
-from mydata_util import random_get_dict
 import config
 import torch
 import pickle

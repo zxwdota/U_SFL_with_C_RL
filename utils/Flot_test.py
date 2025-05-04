@@ -1,4 +1,3 @@
-import pickle
 import torch
 from thop import profile  # 不建议使用profile，会污染模型，变成float64。不建议实用float64，速度慢且支持性差（MPS不支持）
 # 将profile 包中的float64改为float32 现在变得可用了。
@@ -9,8 +8,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import time
 import numpy as np
 
-from resnet import ResNet18, ResNet34, ResNet50, ResNet101, ResNet152
-from mysfl_multi_splitpoint import run, ResNet18_head_side, Baseblock, ResNet18_mid_side, ResNet18_tail_side
+from utils.resnet import ResNet50, ResNet152
+from mysfl_multi_splitpoint import ResNet18_head_side, Baseblock, ResNet18_mid_side, ResNet18_tail_side
 
 input_list = [0,1,1,2,2,7]
 

@@ -1,13 +1,9 @@
 import numpy as np
 import pandas as pd
 import seaborn as sns
-import matplotlib.pyplot as plt
-from sklearn.datasets import make_blobs
-from sklearn.cluster import KMeans, DBSCAN, HDBSCAN
-from splitdata_to_client_and_get_q import read_data_non_iid, get_quality
-from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score, adjusted_rand_score, normalized_mutual_info_score
+from sklearn.cluster import KMeans, DBSCAN
+from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
 
-from mydata_util import random_get_dict
 import config
 import torch
 import pickle
@@ -269,7 +265,6 @@ server_data = {
 }
 servers_df = pd.DataFrame(server_data)
 
-from sklearn.neighbors import NearestNeighbors
 import matplotlib.pyplot as plt
 import numpy as np
 
