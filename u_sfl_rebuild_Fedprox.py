@@ -23,6 +23,7 @@ if torch.cuda.is_available():
     print(torch.cuda.get_device_name(0))
 _SAVE_DIR = 'rebuild/local_5turn_fedavg/'
 _User_DIR = 'rebuild/'
+mu = 1
 # 每次从轮初始的服务器模型开始训练
 def initialize_weights(model):
     for m in model.modules():
@@ -67,7 +68,7 @@ class Client:
         self.idxs = idxs
 
     def train_one_round(self, server,ep):
-        global dataset_train, global_client_model, temp_model, global_server_model
+        global dataset_train, global_client_model, temp_model, global_server_model, mu
 
         c_model = copy.deepcopy(global_client_model).to(device_fl)
         data = DataLoader(DatasetSplit(dataset_train, self.idxs),
@@ -91,6 +92,9 @@ class Client:
                 # 3) 在本地把这段梯度“注入”进 f_c，更新 client 模型
                 torch.autograd.backward(f_c, grad_tensors=grad_f_c)
 
+                for w_c, w_g in zip(c_model.parameters(), global_client_model.parameters()):
+                    w_c.grad.data += mu * (w_g.data.to(device_fl) - w_c.data)
+
                 opt_c.step()
 
         return c_model.state_dict(), s_model.state_dict()
@@ -111,7 +115,7 @@ class Server:
         返回：
             grad_f_c: tensor, shape same as f_c，用于客户端反向
         """
-        global global_server_model, net_model_server, temp_model
+        global global_server_model, net_model_server, temp_model, mu
         s_model = copy.deepcopy(temp_model).to(device_fl)
         s_model.train()
         opt_s = torch.optim.Adam(s_model.parameters(), lr=config.lr)
@@ -123,6 +127,10 @@ class Server:
         # 计算损失并反向——仅服务器参数和 f_c 会留下 grad
         loss = torch.nn.functional.cross_entropy(y_hat, y, weight=class_weights)
         loss.backward()
+
+        for w_s, w_g in zip(s_model.parameters(), global_server_model.parameters()):
+            w_s.grad.data += mu * (w_g.data.to(device_fl) - w_s.data)
+
         opt_s.step()
 
         # 把 f_c 的梯度 detach 出来，传回客户端
@@ -236,7 +244,7 @@ if __name__ == '__main__':
 
     json.dump(client_index, open(_SAVE_DIR + 'client_index.json', 'w'))
 
-
+    #  ----------------------------------------------定义客户端服务器----------------------------------------------------
 
     for cid in client_index:
         # client[i] = Client(i, dataset_train, dict_users_iid, global_client_model)
@@ -252,14 +260,19 @@ if __name__ == '__main__':
     server_states_for_inter = []   # 临时容器
     client_states_for_inter = []
 
+
+
+
+    #  ----------------------------------------------开始训练----------------------------------------------------
+
+
     num_rounds = 100          # = len(range(20))
     num_servers = len(server_list)
+    local_ep = [min(int(800 / client_weights[i]), 5) for i in range(len(client_index))]
 
-    # ---------- 外层进度条 ----------
     for r in tqdm(range(num_rounds),desc='Rounds',unit='round'):
         server_states_for_inter.clear()
         client_states_for_inter.clear()
-        local_ep = [min(int(800/client_weights[i]),5) for i in range(len(client_index))]
         for srv,cli,ep in zip(server_list,client_list,local_ep):
             c_model_dict,s_model_dict = cli.train_one_round(srv,ep)
             server_states_for_inter.append(s_model_dict)
@@ -267,7 +280,6 @@ if __name__ == '__main__':
 
 
         # ----- 聚合 -----
-        # print('聚合')
         inter_server_state = average_weights(server_states_for_inter,client_weights)
         inter_client_state = average_weights(client_states_for_inter,client_weights)
 
