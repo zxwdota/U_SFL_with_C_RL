@@ -1,5 +1,5 @@
 from copy import deepcopy
-
+import numpy as np
 import matplotlib.pyplot as plt
 from torch.utils.data import ConcatDataset
 
@@ -19,10 +19,10 @@ from typing import Dict, List, OrderedDict
 SEED = config.seed
 random.seed(SEED)
 np.random.seed(SEED)
-device_fl= torch.device("mps")  # cpu cuda mps
+device_fl= torch.device("cpu")  # cpu cuda mps
 if torch.cuda.is_available():
     print(torch.cuda.get_device_name(0))
-_SAVE_DIR = 'rebuild/local_5turn_fedavg_dyn_ep/'
+_SAVE_DIR = 'rebuild/local_5ep_scaffold/'
 _User_DIR = 'rebuild/'
 def initialize_weights(model):
     for m in model.modules():
@@ -32,6 +32,9 @@ def initialize_weights(model):
                 torch.nn.init.constant_(m.bias, 0)
 global_client_model = ResNet18_client_side()
 global_server_model = ResNet18_server_side(Baseblock, [2, 2, 2], 7)
+global_client_model.to(device_fl)
+global_server_model.to(device_fl)
+
 for m in (global_client_model, global_server_model): m.apply(initialize_weights)
 c_global = [torch.zeros_like(param).to(device_fl)
             for param in global_client_model.parameters()]
@@ -105,7 +108,7 @@ class Client:
                 f_c = c_model(images)
 
                 # 2) 送服务器，拿回 dL/df_c
-                grad_f_c, s_model = server.train_oneround(f_c.detach(), labels, class_weights)
+                grad_f_c, s_model, res_server = server.train_oneround(f_c.detach(), labels, class_weights, t, ep)
 
                 # 3) 在本地把这段梯度“注入”进 f_c，更新 client 模型
                 torch.autograd.backward(f_c, grad_tensors=grad_f_c)
@@ -116,8 +119,33 @@ class Client:
                 opt_c.step()
 
             # 更新本地控制变量
+            with torch.no_grad():
+                trainable_parameters = filter(lambda p: p.requires_grad, c_model.parameters())
+                if self.cid not in self.c_local.keys():
+                    self.c_local[self.cid] = [
+                        torch.zeros_like(param, device=device_fl)
+                        for param in c_model.parameters()
+                    ]
+                y_delta = []
+                c_plus = []
+                c_delta = []
 
-        return c_model.state_dict(), s_model.state_dict()
+                # compute y_delta (difference of model before and after training)
+                for param_l, param_g in zip(c_model.parameters(), trainable_parameters):
+                    y_delta.append(param_l - param_g)
+
+                # compute c_plus
+                coef = 1 / (ep * config.lr)
+                for c_l, c_g, diff in zip(self.c_local[self.cid], c_global, y_delta):
+                    c_plus.append(c_l - c_g - coef * diff)
+
+                self.c_local[self.cid] = c_plus
+
+                # compute c_delta
+                for c_p, c_l in zip(c_plus, self.c_local[self.cid]):
+                    c_delta.append(c_p - c_l)
+
+        return c_model.state_dict(), s_model.state_dict(), (y_delta, c_delta), res_server
 
     def sync_with_global(self, new_client_state):
         self.global_C.load_state_dict(new_client_state)
@@ -125,10 +153,11 @@ class Client:
 class Server:
     def __init__(self, sid):
         self.sid = sid
+        self.s_local: Dict[int, List[torch.Tensor]] = {}
 
 
 
-    def train_oneround(self, f_c_detached, y, class_weights):
+    def train_oneround(self, f_c_detached, y, class_weights, t, ep):
         """
         参数：
             f_c_detached: client_model(images).detach()，requires_grad=False
@@ -138,7 +167,7 @@ class Server:
             grad_f_c: tensor, shape same as f_c，用于客户端反向
         """
 
-        global global_server_model, net_model_server, temp_model
+        global global_server_model, net_model_server, temp_model, s_global
         s_model = copy.deepcopy(temp_model).to(device_fl)
         s_model.train()
         opt_s = torch.optim.Adam(s_model.parameters(), lr=config.lr)
@@ -150,10 +179,69 @@ class Server:
         # 计算损失并反向——仅服务器参数和 f_c 会留下 grad
         loss = torch.nn.functional.cross_entropy(y_hat, y, weight=class_weights)
         loss.backward()
-        opt_s.step()
 
-        # 把 f_c 的梯度 detach 出来，传回客户端
-        return f_c.grad.detach(), s_model
+        if t == ep - 1:
+            # 只在最后一轮返回
+            # —— 在服务器端注入 control variate——
+            # 第一次训练时还没 s_local，先初始化为全 0
+            if self.sid not in self.s_local:
+                self.s_local[self.sid] = [
+                    torch.zeros_like(p).to(device_fl) for p in s_model.parameters()
+                ]
+            # 计算 param.grad += (s_global - s_local)
+            for param, s_l, s_g in zip(s_model.parameters(), self.s_local[self.sid], s_global):
+                param.grad.data += (s_g.data - s_l.data)
+
+
+            opt_s.step()
+            # with torch.no_grad():
+            #
+            #     y_delta = [p_new.data - p_old.data
+            #                for p_new, p_old in zip(s_model.parameters(), s_model.parameters())]
+            #
+            #
+            #     # coef = 1 / (local_steps * lr)
+            #     coef = 1.0 / (ep * config.lr)
+            #     s_plus = []
+            #
+            #     for s_l, s_g, dy in zip(self.s_local[self.sid], s_global, y_delta):
+            #         s_plus.append(s_l - s_g - coef * dy)
+            #     s_delta = [sp.data - sl.data
+            #                for sp, sl in zip(s_plus, self.s_local[self.sid])]
+            #     # 更新本地 control
+            #     self.s_local[self.sid] = s_plus
+
+            with torch.no_grad():
+                trainable_parameters = filter(lambda p: p.requires_grad, s_model.parameters())
+                if self.sid not in self.s_local.keys():
+                    self.s_local[self.sid] = [
+                        torch.zeros_like(param, device=device_fl)
+                        for param in s_model.parameters()
+                    ]
+                y_delta = []
+                s_plus = []
+                s_delta = []
+
+                # compute y_delta (difference of model before and after training)
+                for param_l, param_g in zip(s_model.parameters(), trainable_parameters):
+                    y_delta.append(param_l - param_g)
+
+                # compute c_plus
+                coef = 1 / (ep * config.lr)
+                for s_l, s_g, diff in zip(self.s_local[self.sid], s_global, y_delta):
+                    s_plus.append(s_l - s_g - coef * diff)
+
+                self.s_local[self.sid] = s_plus
+
+                # compute c_delta
+                for s_p, s_l in zip(s_plus, self.s_local[self.sid]):
+                    s_delta.append(s_p - s_l)
+
+
+            # 把 f_c 的梯度 detach 出来，传回客户端
+
+            return f_c.grad.detach(), s_model, (y_delta, s_delta)
+        return f_c.grad.detach(), s_model, (None, None)
 
 
 
@@ -216,6 +304,71 @@ def compute_class_weights(dataset, num_classes):
     # 转为 tensor 并丢到 GPU
     return torch.tensor(weights, dtype=torch.float32, device=device_fl)
 
+def aggregate_client(res_cache):
+    global global_client_model, local_ep, client_index, c_global
+    y_delta_cache = list(zip(*res_cache))[0]
+    c_delta_cache = list(zip(*res_cache))[1]
+    trainable_parameter = filter(
+        lambda p: p.requires_grad,
+        global_client_model.parameters()
+    )
+    # update global model
+    avg_weight = torch.tensor(
+        [
+            1 / len(client_index)
+            for _ in range(len(client_index))
+        ],
+        device=device_fl,
+    )
+    for param, y_del in zip(trainable_parameter, zip(*y_delta_cache)):
+        x_del = torch.sum(avg_weight * torch.stack(y_del, dim=-1), dim=-1)
+        param.data += config.lr * x_del
+
+    # update global control
+    for c_g, c_del in zip(c_global, zip(*c_delta_cache)):
+        c_del = torch.sum(avg_weight * torch.stack(c_del, dim=-1), dim=-1)
+        c_g.data += (
+            len(client_index) / config.num_clients
+        ) * c_del
+
+
+def aggregate_server(res_cache):
+    # res_cache 是列表，每项是 (y_delta_list, s_delta_list)
+    global global_server_model, local_ep, client_index, s_global
+    # global_server_model.to(device_fl)
+    # y_delta_cache = [r[0] for r in res_cache]
+    # s_delta_cache = [r[1] for r in res_cache]
+    y_delta_cache = list(zip(*res_cache))[0]
+    s_delta_cache = list(zip(*res_cache))[1]
+    K = len(res_cache)
+    avg_w = 1.0 / K
+    # 更新全局 server 模型
+
+    trainable_parameter = filter(
+        lambda p: p.requires_grad,
+        global_server_model.parameters()
+    )
+    for param, y_del in zip(trainable_parameter, zip(*y_delta_cache)):
+        x_del = torch.sum(avg_w * torch.stack(y_del, dim=-1), dim=-1)
+        param.data += config.lr * x_del
+
+
+    # for idx, param in enumerate(global_server_model.parameters()):
+    #     # 平均所有服务器的 y_delta
+    #     stacked = torch.stack([dy[idx] for dy in y_delta_cache], dim=-1)
+    #     param.data += config.lr * torch.sum(stacked * avg_w, dim=-1)
+
+    # 更新全局 control s_global
+    N = config.num_servers
+    for idx in range(len(s_global)):
+        stacked = torch.stack([sd[idx] for sd in s_delta_cache], dim=-1)
+        # SCAFFOLD 里： s_global += (K/N) * ∑ s_delta
+        s_global[idx].data += (K / N) * torch.sum(stacked * avg_w, dim=-1)
+
+def debug_norms(model, tag):
+    for name, p in model.named_parameters():
+        print(f"{tag} {name}: {p.data.norm().item():.6f}")
+    print("-"*40)
 
 if __name__ == '__main__':
 
@@ -273,7 +426,8 @@ if __name__ == '__main__':
     # server_list: List[Server]，每个 Server 内含若干 Client
     server_states_for_inter = []   # 临时容器
     client_states_for_inter = []
-
+    client_res_cache = []
+    server_res_cache = []
     num_rounds = 100          # = len(range(20))
     num_servers = len(server_list)
 
@@ -281,27 +435,23 @@ if __name__ == '__main__':
     for r in tqdm(range(num_rounds),desc='Rounds',unit='round'):
         server_states_for_inter.clear()
         client_states_for_inter.clear()
+        client_res_cache.clear()
+        server_res_cache.clear()
         local_ep = [min(int(800/client_weights[i]),5) for i in range(len(client_index))]
         for srv,cli,ep in zip(server_list,client_list,local_ep):
-            c_model_dict,s_model_dict = cli.train_one_round(srv,ep)
-            server_states_for_inter.append(s_model_dict)
-            client_states_for_inter.append(c_model_dict)
+            c_model_dict,s_model_dict, res_client, res_server = cli.train_one_round(srv,ep)
 
+            client_res_cache.append(res_client)  # ← 把每个客户端的 res 追加进来
+            server_res_cache.append(res_server)
 
-        # ----- 聚合 -----
-        # print('聚合')
-        inter_server_state = average_weights(server_states_for_inter,client_weights)
-        inter_client_state = average_weights(client_states_for_inter,client_weights)
+        debug_norms(global_client_model, "Before client agg")
+        aggregate_client(client_res_cache)
+        debug_norms(global_client_model, "After  client agg")
 
-        global_server_model.load_state_dict(inter_server_state)
-        global_client_model.load_state_dict(inter_client_state)
+        debug_norms(global_server_model, "Before server agg")
+        aggregate_server(server_res_cache)
+        debug_norms(global_server_model, "After  server agg")
 
-        # 广播
-        # for srv,cli in zip(server_list,client_list):
-        #     srv.global_S = copy.deepcopy(global_server_model).to(device_fl)
-        #     cli.global_C = copy.deepcopy(global_client_model).to(device_fl)
-
-        # -------- 评估并把指标写进外层后缀 --------
         test_acc, test_loss = evaluate(global_client_model, global_server_model, Dataset_test_loder)
         print(f'[Round {r:02d}]  acc={test_acc:.2f}%  loss={test_loss:.4f}')
         # tqdm.write(f'[Round {r:02d}]  acc={test_acc:.2f}%  loss={test_loss:.4f}')

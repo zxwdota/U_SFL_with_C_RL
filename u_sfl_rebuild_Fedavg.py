@@ -3,7 +3,7 @@ from copy import deepcopy
 import matplotlib.pyplot as plt
 from torch.utils.data import ConcatDataset
 
-from config import device_fl
+# from config import device_fl
 from mydata_util import read_data
 import random
 from tqdm import tqdm
@@ -15,13 +15,13 @@ import copy
 from env_splitpoint_with_FL import *
 from matplotlib.ticker import FuncFormatter
 import json
-SEED = config.seed
-random.seed(SEED)
+SEED = config.seed,
+random.seed(42)
 np.random.seed(SEED)
 device_fl= torch.device("mps")  # cpu cuda mps
 if torch.cuda.is_available():
     print(torch.cuda.get_device_name(0))
-_SAVE_DIR = 'rebuild/all_client_1turn_fedavg/'
+_SAVE_DIR = 'rebuild/all_client_5turn_fedavg/'
 _User_DIR = 'rebuild/'
 # 每次从轮初始的服务器模型开始训练
 def initialize_weights(model):
@@ -252,14 +252,14 @@ if __name__ == '__main__':
     server_states_for_inter = []   # 临时容器
     client_states_for_inter = []
 
-    num_rounds = 500          # = len(range(20))
+    num_rounds = 100          # = len(range(20))
     num_servers = len(server_list)
 
     # ---------- 外层进度条 ----------
     for r in tqdm(range(num_rounds),desc='Rounds',unit='round'):
         server_states_for_inter.clear()
         client_states_for_inter.clear()
-        local_ep = [1 for _ in client_index]
+        local_ep = [5 for _ in client_index]
         for srv,cli,ep in zip(server_list,client_list,local_ep):
             c_model_dict,s_model_dict = cli.train_one_round(srv,ep)
             server_states_for_inter.append(s_model_dict)
@@ -267,7 +267,6 @@ if __name__ == '__main__':
 
 
         # ----- 聚合 -----
-        # print('聚合')
         inter_server_state = average_weights(server_states_for_inter, client_weights)
         inter_client_state = average_weights(client_states_for_inter, client_weights)
 
