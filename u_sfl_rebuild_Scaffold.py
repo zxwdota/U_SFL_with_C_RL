@@ -19,10 +19,10 @@ from typing import Dict, List, OrderedDict
 SEED = config.seed
 random.seed(SEED)
 np.random.seed(SEED)
-device_fl= torch.device("cuda")  # cpu cuda mps
+device_fl= torch.device("mps")  # cpu cuda mps
 if torch.cuda.is_available():
     print(torch.cuda.get_device_name(0))
-_SAVE_DIR = 'rebuild/local_1ep_scaffold/'
+_SAVE_DIR = 'rebuild/local_5ep_scaffold/'
 _User_DIR = 'rebuild/'
 def initialize_weights(model):
     for m in model.modules():
@@ -91,15 +91,6 @@ class Client:
         s_model = copy.deepcopy(global_server_model).to(device_fl)
 
 
-        #计算c_diff = c_global - c_local
-        # if self.cid not in self.c_local.keys():
-        #     self.c_diff = c_global
-        # else:
-        #     self.c_diff = []
-        #     for c_l, c_g in zip(self.c_local[self.cid], c_global):
-        #         self.c_diff.append(-c_l + c_g)
-
-
         # 训练ep轮
         for t in range(ep):
             for batch_idex, (images, labels) in enumerate(data):
@@ -117,9 +108,6 @@ class Client:
                 grad_f_c, s_model = server.train_oneround(f_c.detach(), s_model, labels, ep, batch_finished)
 
                 torch.autograd.backward(f_c, grad_tensors=grad_f_c)
-
-                # for param, c_l, c_g in zip(c_model.parameters(), self.c_local, c_global):
-                #     param.grad = param.grad - c_l + c_g
 
                 grads = []
                 for p in c_model.parameters():
@@ -174,11 +162,6 @@ class Server:
 
         loss.backward()
 
-
-
-        # 计算 param.grad += (s_global - s_local)
-        # for param, s_l, s_g in zip(s_model.parameters(), self.s_local[self.sid], s_global):
-        #     param.grad.data += (s_g.data - s_l.data)
 
         grads = []
         for p in s_model.parameters():
@@ -376,6 +359,9 @@ if __name__ == '__main__':
 
     json.dump(client_index, open(_SAVE_DIR + 'client_index.json', 'w'))
 
+    client_index = range(50)
+
+
     for cid in client_index:
         # client[i] = Client(i, dataset_train, dict_users_iid, global_client_model)
         client_list.append(Client(cid, dict_users_non_iid[cid]))
@@ -385,13 +371,12 @@ if __name__ == '__main__':
 
 
 
-
     # server_list: List[Server]，每个 Server 内含若干 Client
     server_states_for_inter = []   # 临时容器
     client_states_for_inter = []
     client_res_cache = []
     server_res_cache = []
-    num_rounds = 500          # = len(range(20))
+    num_rounds = 100          # = len(range(20))
     num_servers = len(server_list)
 
     # ---------- 外层进度条 ----------
@@ -400,23 +385,24 @@ if __name__ == '__main__':
         client_states_for_inter.clear()
         client_res_cache.clear()
         server_res_cache.clear()
-        # local_ep = [min(int(800/client_weights[i]),5) for i in range(len(client_index))]
-        local_ep = [1 for i in range(len(client_index))]
-        for srv,cli,ep in zip(server_list,client_list,local_ep):
-            c_model_dict,s_model_dict = cli.train_one_round(srv,ep)
+        local_ep = [min(int(800/client_weights[i]),5) for i in range(len(client_index))]
+        # local_ep = [1 for i in range(len(client_index))]
+        rc = random.sample(client_index, 5)
+        for i in rc:
+            c_model_dict,s_model_dict = client_list[i].train_one_round(server_list[i],local_ep[i])
             server_states_for_inter.append(s_model_dict)
             client_states_for_inter.append(c_model_dict)
 
-
+        S = len(rc)
         N = len(client_list)
         with torch.no_grad():
             global_client_model.load_state_dict(average_weights(client_states_for_inter))
             global_server_model.load_state_dict(average_weights(server_states_for_inter))
             for srv, cli in zip(server_list,client_list):
                 for cg, cl in zip(c_global, cli.c_local):
-                    cg.data.copy_(cg + ((1/N)*(cl - cg)))
+                    cg.data.copy_(cg + ((S/N)*(cl - cg)))
                 for sg, sl in zip(s_global, srv.s_local):
-                    sg.data.copy_(sg + ((1/N)*(sl - sg)))
+                    sg.data.copy_(sg + ((S/N)*(sl - sg)))
 
 
 
@@ -427,7 +413,6 @@ if __name__ == '__main__':
         acc.append(test_acc)
         loss.append(test_loss)
 
-        torch.cuda.empty_cache()
         # 也可以把结果挂在外层进度条后缀：
 
         json.dump(acc, open(_SAVE_DIR + 'test_acc.json', 'w'))
